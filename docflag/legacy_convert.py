@@ -45,11 +45,11 @@ def convert_doc(path: str) -> str:
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"LibreOffice: {exc}")
 
-    detail = " | ".join(errors) if errors else "no converter found"
+    detail = " | ".join(errors) if errors else "δεν βρέθηκε πρόγραμμα μετατροπής"
     raise RuntimeError(
-        "Converting .doc files needs Microsoft Word or LibreOffice on the PC "
-        f"that runs DocFlag ({detail}). Alternatively open the file in Word "
-        "and use Save As > Word Document (.docx)."
+        "Η μετατροπή αρχείων .doc χρειάζεται Microsoft Word ή LibreOffice στον "
+        f"υπολογιστή όπου εκτελείται το DocFlag ({detail}). Εναλλακτικά ανοίξτε "
+        "το αρχείο στο Word και επιλέξτε Αποθήκευση ως > Έγγραφο του Word (.docx)."
     )
 
 
@@ -108,5 +108,5 @@ def _convert_via_libreoffice(soffice: str, path: str, out_path: str) -> str:
     )
     if result.returncode != 0 or not os.path.isfile(out_path):
         detail = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(detail or f"exit code {result.returncode}")
+        raise RuntimeError(detail or f"κωδικός εξόδου {result.returncode}")
     return out_path

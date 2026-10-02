@@ -47,26 +47,26 @@ def _highlighted(data: bytes) -> list[str]:
 async def test_page_renders_expected_controls(user: User) -> None:
     await user.open("/")
     await user.should_see("DocFlag")
-    await user.should_see("1. Add documents")
-    await user.should_see("2. Words to flag")
-    await user.should_see("3. Flag")
-    await user.should_see("No documents added yet.")
+    await user.should_see("1. Προσθήκη εγγράφων")
+    await user.should_see("2. Λέξεις προς επισήμανση")
+    await user.should_see("3. Επισήμανση")
+    await user.should_see("Δεν έχουν προστεθεί έγγραφα ακόμη.")
     await user.should_see("confidential")  # default list
-    await user.should_see("Open from other PCs on this network")
+    await user.should_see("Άνοιγμα από άλλους υπολογιστές του δικτύου")
 
 
 @pytest.mark.nicegui_main_file("docflag.py")
 async def test_flag_button_warns_with_no_documents(user: User) -> None:
     await user.open("/")
     user.find(marker="flag-button").click()
-    await user.should_see("Add at least one Word file first.")
+    await user.should_see("Προσθέστε πρώτα τουλάχιστον ένα αρχείο Word.")
 
 
 @pytest.mark.nicegui_main_file("docflag.py")
 async def test_non_word_upload_is_skipped(user: User) -> None:
     await user.open("/")
     await _upload(user, "doc-upload", "notes.pdf", b"x", "application/pdf")
-    await user.should_see("No documents added yet.")
+    await user.should_see("Δεν έχουν προστεθεί έγγραφα ακόμη.")
 
 
 @pytest.mark.nicegui_main_file("docflag.py")
@@ -86,8 +86,8 @@ async def test_add_word_then_flag_single_document(user: User, tmp_path) -> None:
     response = await user.download.next(timeout=10.0)
     assert response.status_code == 200
     assert _highlighted(response.content) == ["zebra", "draft"]
-    await user.should_see("2 match(es)")
-    await user.should_see("'memo_flagged.docx' is ready")
+    await user.should_see("2 εμφανίσεις")
+    await user.should_see("Το 'memo_flagged.docx' είναι έτοιμο")
 
 
 @pytest.mark.nicegui_main_file("docflag.py")
@@ -109,11 +109,11 @@ async def test_several_documents_come_back_as_zip_with_report(user: User, tmp_pa
         assert _highlighted(zf.read("memo_flagged (2).docx")) == []
         rows = list(csv.reader(io.StringIO(zf.read("report.csv").decode("utf-8-sig"))))
     assert rows == [
-        ["File", "Word", "Matches"],
+        ["Αρχείο", "Λέξη", "Εμφανίσεις"],
         ["memo.docx", "draft", "2"],
-        ["memo.docx", "(no matches)", "0"],
+        ["memo.docx", "(καμία εμφάνιση)", "0"],
     ]
-    await user.should_see("No matches")
+    await user.should_see("Καμία εμφάνιση")
 
 
 @pytest.mark.nicegui_main_file("docflag.py")
@@ -131,7 +131,7 @@ async def test_bulk_add_import_and_reset(user: User) -> None:
     assert wordlist.load() == ["one", "two", "three words", "four"]
 
     user.find(marker="reset-words").click()
-    await user.should_see("Replace the shared word list with the defaults?")
+    await user.should_see("Να αντικατασταθεί η κοινόχρηστη λίστα λέξεων με την προεπιλεγμένη;")
     user.find(marker="confirm-yes").click()
     await user.should_see("confidential")
     assert wordlist.load() == wordlist.defaults()

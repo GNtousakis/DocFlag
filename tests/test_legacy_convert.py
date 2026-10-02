@@ -63,7 +63,7 @@ def test_libreoffice_conversion(tmp_path, fake_soffice):
 def test_clear_error_when_no_converter(tmp_path, monkeypatch):
     monkeypatch.setattr(legacy_convert.sys, "platform", "linux")
     monkeypatch.setattr(legacy_convert, "_find_soffice", lambda: None)
-    with pytest.raises(RuntimeError, match="Microsoft Word or LibreOffice"):
+    with pytest.raises(RuntimeError, match="Microsoft Word ή LibreOffice"):
         convert_doc(str(tmp_path / "in_1.doc"))
 
 
@@ -125,7 +125,7 @@ async def test_doc_upload_is_converted_and_flagged(user: User, fake_soffice) -> 
     response = await user.download.next(timeout=10.0)
     doc = Document(io.BytesIO(response.content))
     assert [r.text for r in doc.paragraphs[0].runs if r.font.highlight_color] == ["draft"]
-    await user.should_see("'old report_flagged.docx' is ready")
+    await user.should_see("Το 'old report_flagged.docx' είναι έτοιμο")
 
 
 @pytest.mark.nicegui_main_file("docflag.py")
@@ -139,5 +139,5 @@ async def test_doc_upload_without_converter_is_refused(user: User, monkeypatch) 
     )
     with user.client:
         await upload_element.handle_uploads([file_upload])
-    await user.should_see("needs Microsoft Word or LibreOffice")
-    await user.should_see("No documents added yet.")
+    await user.should_see("χρειάζεται Microsoft Word ή LibreOffice")
+    await user.should_see("Δεν έχουν προστεθεί έγγραφα ακόμη.")

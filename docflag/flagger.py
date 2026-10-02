@@ -127,16 +127,16 @@ def flag_document(
     words = list(words)
     pattern = build_pattern(words)
     if pattern is None:
-        raise ValueError("The word list is empty.")
+        raise ValueError("Η λίστα λέξεων είναι κενή.")
     if colour not in HIGHLIGHT_COLOURS:
-        raise ValueError(f"'{colour}' is not a Word highlight colour.")
+        raise ValueError(f"Το '{colour}' δεν είναι χρώμα επισήμανσης του Word.")
 
     try:
         pkg = Package.load(src)
     except zipfile.BadZipFile as exc:
-        raise ValueError("This is not a valid .docx file.") from exc
+        raise ValueError("Αυτό δεν είναι έγκυρο αρχείο .docx.") from exc
     if not pkg.has_part(DOCUMENT_PART):
-        raise ValueError("This is not a valid .docx file.")
+        raise ValueError("Αυτό δεν είναι έγκυρο αρχείο .docx.")
 
     terms = _terms(words)
     result = FlagResult()

@@ -27,6 +27,16 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 DOCX_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
+# Word's highlighter colours as shown in the colour picker.
+COLOUR_LABELS = {
+    "yellow": "Κίτρινο", "green": "Πράσινο", "cyan": "Κυανό",
+    "magenta": "Ματζέντα", "red": "Κόκκινο", "blue": "Μπλε",
+    "lightGray": "Ανοιχτό γκρι", "darkYellow": "Σκούρο κίτρινο",
+    "darkGreen": "Σκούρο πράσινο", "darkCyan": "Σκούρο κυανό",
+    "darkMagenta": "Σκούρο ματζέντα", "darkRed": "Σκούρο κόκκινο",
+    "darkBlue": "Σκούρο μπλε", "darkGray": "Σκούρο γκρι",
+}
+assert list(COLOUR_LABELS) == HIGHLIGHT_COLOURS
 
 
 @dataclass
@@ -76,15 +86,20 @@ def _unique_names(names: list[str]) -> list[str]:
     return unique
 
 
+def _count(n: int, one: str, many: str) -> str:
+    """'1 λέξη' / '3 λέξεις'."""
+    return f"{n} {one if n == 1 else many}"
+
+
 def _report_csv(outcomes: list[Outcome]) -> bytes:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(["File", "Word", "Matches"])
+    writer.writerow(["Αρχείο", "Λέξη", "Εμφανίσεις"])
     for outcome in outcomes:
         if outcome.result is None:
-            writer.writerow([outcome.doc.display_name, f"ERROR: {outcome.error}", ""])
+            writer.writerow([outcome.doc.display_name, f"ΣΦΑΛΜΑ: {outcome.error}", ""])
         elif not outcome.result.counts:
-            writer.writerow([outcome.doc.display_name, "(no matches)", 0])
+            writer.writerow([outcome.doc.display_name, "(καμία εμφάνιση)", 0])
         else:
             for word, count in sorted(
                 outcome.result.counts.items(), key=lambda item: -item[1]
@@ -122,14 +137,17 @@ def create_app(port: int = DEFAULT_PORT) -> None:
             name = os.path.basename(e.file.name.replace("\\", "/"))
             if name.startswith("~$"):
                 ui.notify(
-                    f"Skipped '{name}': looks like a Word lock file "
-                    "(the real file may be open in Word right now)",
+                    f"Το '{name}' παραλείφθηκε: μοιάζει με αρχείο κλειδώματος του Word "
+                    "(το πραγματικό αρχείο ίσως είναι ανοιχτό στο Word αυτή τη στιγμή)",
                     type="warning",
                 )
                 return
             ext = os.path.splitext(name)[1].lower()
             if ext not in (".docx", ".doc"):
-                ui.notify(f"Skipped '{name}': not a .docx or .doc file", type="warning")
+                ui.notify(
+                    f"Το '{name}' παραλείφθηκε: δεν είναι αρχείο .docx ή .doc",
+                    type="warning",
+                )
                 return
             upload_counter["n"] += 1
             dest_path = os.path.join(session_dir, f"in_{upload_counter['n']}{ext}")
@@ -138,20 +156,20 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                 f.write(data)
 
             if is_legacy_doc(dest_path):
-                ui.notify(f"Converting '{name}' from .doc to .docx...", type="info")
+                ui.notify(f"Μετατροπή του '{name}' από .doc σε .docx...", type="info")
                 try:
                     # Word/LibreOffice take a few seconds: keep the UI responsive.
                     dest_path = await run.io_bound(convert_doc, dest_path)
                 except Exception as exc:  # noqa: BLE001
                     ui.notify(
-                        f"Couldn't add '{name}': {exc}", type="negative",
+                        f"Το '{name}' δεν προστέθηκε: {exc}", type="negative",
                         multi_line=True, timeout=15000, close_button=True,
                     )
                     upload.reset()
                     return
             documents.append(DocEntry(display_name=name, path=dest_path))
             doc_list.refresh()
-            ui.notify(f"Added '{name}'", type="positive")
+            ui.notify(f"Προστέθηκε το '{name}'", type="positive")
             upload.reset()
 
         # -- word list ------------------------------------------------------
@@ -160,8 +178,8 @@ def create_app(port: int = DEFAULT_PORT) -> None:
             with ui.dialog() as dialog, ui.card():
                 ui.label(question)
                 with ui.row().classes("w-full justify-end"):
-                    ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
-                    ui.button("Yes", on_click=lambda: dialog.submit(True)).props(
+                    ui.button("Άκυρο", on_click=lambda: dialog.submit(False)).props("flat")
+                    ui.button("Ναι", on_click=lambda: dialog.submit(True)).props(
                         "unelevated"
                     ).mark("confirm-yes")
             return bool(await dialog)
@@ -169,14 +187,18 @@ def create_app(port: int = DEFAULT_PORT) -> None:
         def add_words(text: str, source) -> None:
             new = wordlist.parse_lines(text)
             if not new:
-                ui.notify("Type a word or phrase first.", type="warning")
+                ui.notify("Γράψτε πρώτα μια λέξη ή φράση.", type="warning")
                 return
             before = len(wordlist.load())
             added = len(wordlist.add(new)) - before
             source.value = ""
             word_chips.refresh()
             ui.notify(
-                f"Added {added} word(s)" if added else "Already in the list",
+                (
+                    "Προστέθηκε 1 λέξη" if added == 1
+                    else f"Προστέθηκαν {added} λέξεις" if added
+                    else "Υπάρχει ήδη στη λίστα"
+                ),
                 type="positive" if added else "info",
             )
 
@@ -190,18 +212,21 @@ def create_app(port: int = DEFAULT_PORT) -> None:
             added = len(wordlist.add(wordlist.parse_lines(text))) - before
             word_chips.refresh()
             import_upload.reset()
-            ui.notify(f"Imported {added} new word(s)", type="positive")
+            ui.notify((
+                    "Εισήχθη 1 νέα λέξη" if added == 1
+                    else f"Εισήχθησαν {added} νέες λέξεις"
+                ), type="positive")
 
         def export_words() -> None:
             ui.download("\n".join(wordlist.load()).encode("utf-8"), "docflag_words.txt")
 
         async def reset_words() -> None:
-            if await confirm("Replace the shared word list with the defaults?"):
+            if await confirm("Να αντικατασταθεί η κοινόχρηστη λίστα λέξεων με την προεπιλεγμένη;"):
                 wordlist.reset()
                 word_chips.refresh()
 
         async def remove_all_words() -> None:
-            if await confirm("Remove every word from the shared list?"):
+            if await confirm("Να αφαιρεθούν όλες οι λέξεις από την κοινόχρηστη λίστα;"):
                 wordlist.save([])
                 word_chips.refresh()
 
@@ -213,7 +238,7 @@ def create_app(port: int = DEFAULT_PORT) -> None:
             with ui.row().classes("items-center gap-2"):
                 ui.icon("flag", size="28px")
                 ui.label("DocFlag").classes("text-xl font-bold")
-            ui.label(f"Open from other PCs on this network: {lan_url}").classes(
+            ui.label(f"Άνοιγμα από άλλους υπολογιστές του δικτύου: {lan_url}").classes(
                 "text-sm opacity-80"
             )
 
@@ -221,18 +246,18 @@ def create_app(port: int = DEFAULT_PORT) -> None:
 
             with ui.card().classes("w-full"):
                 with ui.row().classes("items-center justify-between w-full"):
-                    ui.label("1. Add documents").classes("text-lg font-semibold")
-                    ui.button("Clear all", icon="clear_all", on_click=clear_all).props(
+                    ui.label("1. Προσθήκη εγγράφων").classes("text-lg font-semibold")
+                    ui.button("Καθαρισμός", icon="clear_all", on_click=clear_all).props(
                         "flat dense color=negative"
                     )
                 upload = ui.upload(
-                    label="Drop .docx or .doc files here or click to browse",
+                    label="Σύρετε εδώ αρχεία .docx ή .doc ή κάντε κλικ για αναζήτηση",
                     multiple=True,
                     auto_upload=True,
                     max_file_size=MAX_UPLOAD_BYTES,
                     on_upload=handle_upload,
                     on_rejected=lambda: ui.notify(
-                        "File rejected: the limit is 50 MB per document.",
+                        "Το αρχείο απορρίφθηκε: το όριο είναι 50 MB ανά έγγραφο.",
                         type="negative",
                     ),
                 ).props("accept=.docx,.doc").classes("w-full").mark("doc-upload")
@@ -240,7 +265,7 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                 @ui.refreshable
                 def doc_list() -> None:
                     if not documents:
-                        ui.label("No documents added yet.").classes(
+                        ui.label("Δεν έχουν προστεθεί έγγραφα ακόμη.").classes(
                             "text-gray-400 italic py-4"
                         )
                         return
@@ -257,19 +282,20 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                 doc_list()
 
             with ui.card().classes("w-full"):
-                ui.label("2. Words to flag").classes("text-lg font-semibold")
+                ui.label("2. Λέξεις προς επισήμανση").classes("text-lg font-semibold")
                 ui.label(
-                    "Whole words and phrases; upper/lower case and accents are "
-                    "ignored. End a word with * to match any ending (contract* "
-                    "finds contracts, contractual). This list is shared: changes "
-                    "are saved and apply for everyone."
+                    "Ολόκληρες λέξεις και φράσεις· κεφαλαία/πεζά και τόνοι "
+                    "αγνοούνται. Βάλτε * στο τέλος μιας λέξης για οποιαδήποτε "
+                    "κατάληξη (το εμπιστευτικ* βρίσκει εμπιστευτικά, "
+                    "εμπιστευτικού). Η λίστα είναι κοινόχρηστη: οι αλλαγές "
+                    "αποθηκεύονται και ισχύουν για όλους."
                 ).classes("text-sm text-gray-500")
 
                 @ui.refreshable
                 def word_chips() -> None:
                     words = wordlist.load()
                     if not words:
-                        ui.label("The list is empty.").classes(
+                        ui.label("Η λίστα είναι κενή.").classes(
                             "text-gray-400 italic py-2"
                         )
                         return
@@ -284,29 +310,29 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                 word_chips()
 
                 with ui.row().classes("items-center w-full gap-2"):
-                    new_word = ui.input("Add a word or phrase").classes(
+                    new_word = ui.input("Προσθήκη λέξης ή φράσης").classes(
                         "flex-grow"
                     ).mark("new-word")
                     new_word.on(
                         "keydown.enter", lambda: add_words(new_word.value, new_word)
                     )
                     ui.button(
-                        "Add", icon="add",
+                        "Προσθήκη", icon="add",
                         on_click=lambda: add_words(new_word.value, new_word),
                     ).props("unelevated").mark("add-word")
 
-                with ui.expansion("Paste a list, import, export, reset").classes(
+                with ui.expansion("Επικόλληση λίστας, εισαγωγή, εξαγωγή, επαναφορά").classes(
                     "w-full"
                 ):
-                    bulk = ui.textarea("One word or phrase per line").classes(
+                    bulk = ui.textarea("Μία λέξη ή φράση ανά γραμμή").classes(
                         "w-full"
                     ).mark("bulk-words")
                     ui.button(
-                        "Add all", icon="playlist_add",
+                        "Προσθήκη όλων", icon="playlist_add",
                         on_click=lambda: add_words(bulk.value, bulk),
                     ).props("flat").mark("bulk-add")
                     import_upload = ui.upload(
-                        label="Import a .txt file (one word per line)",
+                        label="Εισαγωγή αρχείου .txt (μία λέξη ανά γραμμή)",
                         auto_upload=True,
                         on_upload=handle_import,
                     ).props("accept=.txt flat bordered").classes("w-full").mark(
@@ -314,25 +340,25 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                     )
                     with ui.row().classes("gap-2"):
                         ui.button(
-                            "Export list", icon="download", on_click=export_words
+                            "Εξαγωγή λίστας", icon="download", on_click=export_words
                         ).props("flat").mark("export-words")
                         ui.button(
-                            "Reset to defaults", icon="restart_alt", on_click=reset_words
+                            "Επαναφορά προεπιλογών", icon="restart_alt", on_click=reset_words
                         ).props("flat").mark("reset-words")
                         ui.button(
-                            "Remove all", icon="delete_sweep", on_click=remove_all_words
+                            "Αφαίρεση όλων", icon="delete_sweep", on_click=remove_all_words
                         ).props("flat color=negative").mark("remove-all-words")
 
             with ui.card().classes("w-full"):
-                ui.label("3. Flag").classes("text-lg font-semibold")
+                ui.label("3. Επισήμανση").classes("text-lg font-semibold")
                 colour = ui.select(
-                    HIGHLIGHT_COLOURS, value="yellow", label="Highlight colour"
+                    COLOUR_LABELS, value="yellow", label="Χρώμα επισήμανσης"
                 ).classes("w-48").mark("colour")
                 ui.label(
-                    "Your original files are not changed: you get highlighted "
-                    ".docx copies (a .zip with a summary if there are several)."
+                    "Τα αρχικά σας αρχεία δεν αλλάζουν: λαμβάνετε επισημασμένα "
+                    "αντίγραφα .docx (ένα .zip με σύνοψη αν είναι περισσότερα)."
                 ).classes("text-sm text-gray-500")
-                flag_button = ui.button("Flag and download", icon="flag").props(
+                flag_button = ui.button("Επισήμανση και λήψη", icon="flag").props(
                     "unelevated"
                 ).mark("flag-button")
 
@@ -344,7 +370,7 @@ def create_app(port: int = DEFAULT_PORT) -> None:
             if outcome.result is None:
                 with ui.card().classes("w-full border-l-4 border-red-500"):
                     ui.label(outcome.doc.display_name).classes("font-semibold")
-                    ui.label(f"Could not be processed: {outcome.error}").classes(
+                    ui.label(f"Δεν ήταν δυνατή η επεξεργασία: {outcome.error}").classes(
                         "text-sm text-red-600"
                     )
                 return
@@ -354,7 +380,8 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                 with ui.row().classes("items-center justify-between w-full"):
                     ui.label(outcome.doc.display_name).classes("font-semibold truncate")
                     ui.label(
-                        f"{total} match(es)" if total else "No matches"
+                        _count(total, "εμφάνιση", "εμφανίσεις") if total
+                        else "Καμία εμφάνιση"
                     ).classes("text-sm")
                 with ui.row().classes("gap-1"):
                     for word, count in sorted(
@@ -365,11 +392,11 @@ def create_app(port: int = DEFAULT_PORT) -> None:
         async def run_flag() -> None:
             results.clear()
             if not documents:
-                ui.notify("Add at least one Word file first.", type="warning")
+                ui.notify("Προσθέστε πρώτα τουλάχιστον ένα αρχείο Word.", type="warning")
                 return
             words = wordlist.load()
             if not words:
-                ui.notify("The word list is empty: add a word first.", type="warning")
+                ui.notify("Η λίστα λέξεων είναι κενή: προσθέστε πρώτα μια λέξη.", type="warning")
                 return
 
             flag_button.props("loading")
@@ -401,7 +428,7 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                     for outcome in outcomes:
                         render_outcome(outcome)
                 if not done:
-                    ui.notify("No document could be processed.", type="negative")
+                    ui.notify("Δεν ήταν δυνατή η επεξεργασία κανενός εγγράφου.", type="negative")
                     return
 
                 if len(outcomes) == 1:
@@ -419,10 +446,10 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                 ui.download(data, filename, media_type)
                 with results:
                     ui.button(
-                        "Download again", icon="download",
+                        "Λήψη ξανά", icon="download",
                         on_click=lambda: ui.download(data, filename, media_type),
                     ).props("flat")
-                ui.notify(f"'{filename}' is ready — check your downloads.", type="positive")
+                ui.notify(f"Το '{filename}' είναι έτοιμο — δείτε τις λήψεις σας.", type="positive")
             finally:
                 flag_button.props(remove="loading")
                 flag_button.set_enabled(True)
@@ -431,19 +458,20 @@ def create_app(port: int = DEFAULT_PORT) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DocFlag web interface")
+    parser = argparse.ArgumentParser(description="Διεπαφή ιστού του DocFlag")
     parser.add_argument("--host", default="0.0.0.0",
-                        help="address to listen on (default: all, for LAN access)")
+                        help="διεύθυνση ακρόασης (προεπιλογή: όλες, για πρόσβαση από το τοπικό δίκτυο)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--no-browser", action="store_true",
-                        help="don't open a browser window on start")
+                        help="να μην ανοίγει παράθυρο περιηγητή κατά την εκκίνηση")
     args, _ = parser.parse_known_args()
 
     sweep_stale_sessions()
     create_app(args.port)
-    print(f"DocFlag: other PCs on this network can open http://{lan_ip()}:{args.port}")
-    print("Close this window to stop DocFlag.")
-    ui.run(host=args.host, port=args.port, reload=False, title="DocFlag",
+    print(f"DocFlag: οι άλλοι υπολογιστές του δικτύου μπορούν να ανοίξουν το "
+          f"http://{lan_ip()}:{args.port}")
+    print("Κλείστε αυτό το παράθυρο για να σταματήσει το DocFlag.")
+    ui.run(host=args.host, port=args.port, reload=False, title="DocFlag", language="el",
            show=not args.no_browser)
 
 

@@ -1,5 +1,6 @@
-# DocFlag default word list -- one word or phrase per line.
-# Lines starting with # are ignored. This is what "Reset to defaults" restores.
+# Προεπιλεγμένη λίστα λέξεων του DocFlag -- μία λέξη ή φράση ανά γραμμή.
+# Οι γραμμές που αρχίζουν με # αγνοούνται. Αυτή τη λίστα επαναφέρει η
+# «Επαναφορά προεπιλογών».
 confidential
 internal use only
 do not distribute
