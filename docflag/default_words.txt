@@ -1,0 +1,10 @@
+# DocFlag default word list -- one word or phrase per line.
+# Lines starting with # are ignored. This is what "Reset to defaults" restores.
+confidential
+internal use only
+do not distribute
+draft
+TBD
+TODO
+placeholder
+lorem ipsum
