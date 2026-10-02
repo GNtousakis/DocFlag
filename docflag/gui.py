@@ -14,6 +14,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from nicegui import __version__ as NICEGUI_VERSION
 from nicegui import events, run, ui
 
 from . import wordlist
@@ -37,6 +38,56 @@ COLOUR_LABELS = {
     "darkBlue": "Σκούρο μπλε", "darkGray": "Σκούρο γκρι",
 }
 assert list(COLOUR_LABELS) == HIGHLIGHT_COLOURS
+
+# NiceGUI loads all of its styling through CSS cascade layers (@layer), which
+# browsers older than Chrome/Edge 99 and Firefox 97 silently drop: the page
+# works but shows up completely unstyled. For those browsers, load the same
+# stylesheets as plain <link>s, plus the handful of Tailwind utilities this
+# page uses (Tailwind's own output is layered too).
+LEGACY_STYLESHEETS = (
+    "fonts.css", "quasar.unimportant.prod.css", "quasar.important.prod.css",
+    "nicegui.css",
+)
+LEGACY_UTILITIES = """
+.w-full { width: 100%; } .w-48 { width: 12rem; }
+.max-w-3xl { max-width: 48rem; }
+.mx-auto { margin-left: auto; margin-right: auto; }
+.p-6 { padding: 1.5rem; }
+.px-6 { padding-left: 1.5rem; padding-right: 1.5rem; }
+.py-1 { padding-top: .25rem; padding-bottom: .25rem; }
+.py-2 { padding-top: .5rem; padding-bottom: .5rem; }
+.py-4 { padding-top: 1rem; padding-bottom: 1rem; }
+.gap-1 { gap: .25rem; } .gap-2 { gap: .5rem; }
+.gap-4 { gap: 1rem; } .gap-6 { gap: 1.5rem; }
+.flex-grow { flex-grow: 1; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.text-sm { font-size: .875rem; line-height: 1.25rem; }
+.text-lg { font-size: 1.125rem; line-height: 1.75rem; }
+.text-xl { font-size: 1.25rem; line-height: 1.75rem; }
+.font-semibold { font-weight: 600; } .font-bold { font-weight: 700; }
+.italic { font-style: italic; }
+.opacity-80 { opacity: .8; }
+.text-gray-400 { color: #9ca3af; } .text-gray-500 { color: #6b7280; }
+.text-red-600 { color: #dc2626; }
+.border-b { border-bottom: 1px solid; } .border-l-4 { border-left: 4px solid; }
+.border-gray-200 { border-color: #e5e7eb; }
+.border-gray-300 { border-color: #d1d5db; }
+.border-red-500 { border-color: #ef4444; }
+.border-green-500 { border-color: #22c55e; }
+"""
+
+
+def legacy_css_fallback() -> str:
+    """Head HTML that restores the styling in browsers without @layer."""
+    links = "".join(
+        f'<link rel="stylesheet" href="/_nicegui/{NICEGUI_VERSION}/static/{name}">'
+        for name in LEGACY_STYLESHEETS
+    )
+    html = links + f"<style>{LEGACY_UTILITIES}</style>"
+    return (
+        "<script>if (!window.CSSLayerBlockRule) "
+        f"document.head.insertAdjacentHTML('beforeend', {html!r});</script>"
+    )
 
 
 @dataclass
@@ -111,6 +162,7 @@ def _report_csv(outcomes: list[Outcome]) -> bytes:
 
 def create_app(port: int = DEFAULT_PORT) -> None:
     lan_url = f"http://{lan_ip()}:{port}"
+    ui.add_head_html(legacy_css_fallback(), shared=True)
 
     @ui.page("/")
     def index() -> None:
