@@ -17,7 +17,7 @@ def test_first_load_returns_defaults_without_writing():
 
 def test_add_persists_and_deduplicates_ignoring_case():
     wordlist.save(["Alpha"])
-    assert wordlist.add(["  beta  gamma ", "ALPHA", ""]) == ["Alpha", "beta gamma"]
+    assert wordlist.add(["beta  gamma", "ALPHA", "", "  "]) == ["Alpha", "beta gamma"]
     assert wordlist.load() == ["Alpha", "beta gamma"]
     assert (data_dir() / "wordlist.json").exists()
 
@@ -35,6 +35,20 @@ def test_an_emptied_list_stays_empty():
 
 def test_parse_lines_skips_comments_and_blanks():
     assert wordlist.parse_lines("# note\n\none\r\n two words \n") == ["one", "two words"]
+
+
+def test_spaces_at_the_ends_are_part_of_a_word():
+    wordlist.save([])
+    assert wordlist.add([" .", "  .  ", "."]) == [" .", " . ", "."]
+    assert wordlist.remove(" .") == [" . ", "."]
+
+
+def test_quotes_keep_spaces_in_lists_and_round_trip():
+    assert wordlist.parse_lines('" ."\n"x "\nplain \n') == [" .", "x ", "plain"]
+    assert wordlist.parse_entry(" .") == " ."
+    assert wordlist.parse_entry('" ."') == " ."
+    words = [" .", "draft", '"quoted"']
+    assert wordlist.parse_lines(wordlist.format_lines(words)) == words
 
 
 def test_decode_text_handles_utf8_utf16_and_greek_ansi():

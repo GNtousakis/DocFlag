@@ -12,7 +12,10 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 datas, binaries, hiddenimports = collect_all("nicegui")
 # Only needed (and only present) on Windows, for .doc conversion via Word.
 hiddenimports += ["win32com.client", "pythoncom", "pywintypes"]
-datas += [(os.path.join(ROOT, "docflag", "default_words.txt"), "docflag")]
+datas += [
+    (os.path.join(ROOT, "docflag", name), "docflag")
+    for name in ("default_words.txt", "default_replacements.txt")
+]
 
 a = Analysis(
     [os.path.join(ROOT, "docflag.py")],

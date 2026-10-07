@@ -14,7 +14,7 @@ from nicegui.testing import User
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from docflag import wordlist
+from docflag import replacements, wordlist
 from tests.fixtures.make_fixtures import build_plain
 
 DOCX_CONTENT_TYPE = (
@@ -49,7 +49,9 @@ async def test_page_renders_expected_controls(user: User) -> None:
     await user.should_see("DocFlag")
     await user.should_see("1. Προσθήκη εγγράφων")
     await user.should_see("2. Λέξεις προς επισήμανση")
-    await user.should_see("3. Επισήμανση")
+    await user.should_see("3. Αντικαταστάσεις")
+    await user.should_see("4. Επισήμανση")
+    await user.should_see("τηλ. → τηλέφωνο")  # default replacements
     await user.should_see("Δεν έχουν προστεθεί έγγραφα ακόμη.")
     await user.should_see("confidential")  # default list
     await user.should_see("Άνοιγμα από άλλους υπολογιστές του δικτύου")
@@ -93,6 +95,7 @@ async def test_add_word_then_flag_single_document(user: User, tmp_path) -> None:
 @pytest.mark.nicegui_main_file("docflag.py")
 async def test_several_documents_come_back_as_zip_with_report(user: User, tmp_path) -> None:
     wordlist.save(["draft"])
+    replacements.save([("another", "one more")])
     first = build_plain(str(tmp_path / "one" / "memo.docx"), "A draft, another draft.")
     second = build_plain(str(tmp_path / "two" / "memo.docx"), "Nothing to see.")
     await user.open("/")
@@ -105,13 +108,14 @@ async def test_several_documents_come_back_as_zip_with_report(user: User, tmp_pa
         assert sorted(zf.namelist()) == [
             "memo_flagged (2).docx", "memo_flagged.docx", "report.csv",
         ]
-        assert _highlighted(zf.read("memo_flagged.docx")) == ["draft", "draft"]
+        assert _highlighted(zf.read("memo_flagged.docx")) == ["draft", "one more", "draft"]
         assert _highlighted(zf.read("memo_flagged (2).docx")) == []
         rows = list(csv.reader(io.StringIO(zf.read("report.csv").decode("utf-8-sig"))))
     assert rows == [
-        ["Αρχείο", "Λέξη", "Εμφανίσεις"],
-        ["memo.docx", "draft", "2"],
-        ["memo.docx", "(καμία εμφάνιση)", "0"],
+        ["Αρχείο", "Ενέργεια", "Λέξη", "Εμφανίσεις"],
+        ["memo.docx", "Αντικατάσταση", "another → one more", "1"],
+        ["memo.docx", "Επισήμανση", "draft", "2"],
+        ["memo.docx", "", "(καμία εμφάνιση)", "0"],
     ]
     await user.should_see("Καμία εμφάνιση")
 
@@ -135,3 +139,57 @@ async def test_bulk_add_import_and_reset(user: User) -> None:
     user.find(marker="confirm-yes").click()
     await user.should_see("confidential")
     assert wordlist.load() == wordlist.defaults()
+
+
+@pytest.mark.nicegui_main_file("docflag.py")
+async def test_word_with_a_leading_space(user: User) -> None:
+    wordlist.save([])
+    await user.open("/")
+    user.find(marker="new-word").type(" .")
+    user.find(marker="add-word").click()
+    await user.should_see("␣.")
+    assert wordlist.load() == [" ."]
+
+
+@pytest.mark.nicegui_main_file("docflag.py")
+async def test_add_replacement_then_process(user: User, tmp_path) -> None:
+    wordlist.save([])
+    replacements.save([])
+    path = build_plain(str(tmp_path / "memo.docx"), "Τηλ. 210 .")
+    await user.open("/")
+
+    user.find(marker="replace-from").type("τηλ.")
+    user.find(marker="replace-to").type("τηλέφωνο")
+    user.find(marker="add-replacement").click()
+    await user.should_see("τηλ. → τηλέφωνο")
+    user.find(marker="bulk-replacements").type('" ." => "."\nno separator')
+    user.find(marker="bulk-add-replacements").click()
+    await user.should_see("␣. → .")
+    await user.should_see("1 γραμμή παραλείφθηκε")
+    assert replacements.load() == [("τηλ.", "τηλέφωνο"), (" .", ".")]
+
+    await _upload_doc(user, path)
+    user.find(marker="flag-button").click()
+    response = await user.download.next(timeout=10.0)
+    doc = Document(io.BytesIO(response.content))
+    assert doc.paragraphs[0].text == "Τηλέφωνο 210."
+    assert _highlighted(response.content) == ["Τηλέφωνο", "."]
+    await user.should_see("2 αντικαταστάσεις")
+
+
+@pytest.mark.nicegui_main_file("docflag.py")
+async def test_replacement_import_and_reset(user: User) -> None:
+    replacements.save([])
+    await user.open("/")
+    await _upload(
+        user, "import-replacements", "list.txt",
+        "οδ. => οδός\n# skip\n".encode(), "text/plain",
+    )
+    await user.should_see("οδ. → οδός")
+    assert replacements.load() == [("οδ.", "οδός")]
+
+    user.find(marker="reset-replacements").click()
+    await user.should_see("Να αντικατασταθεί η κοινόχρηστη λίστα αντικαταστάσεων με την προεπιλεγμένη;")
+    user.find(marker="confirm-yes").click()
+    await user.should_see("τηλ. → τηλέφωνο")
+    assert replacements.load() == replacements.defaults()

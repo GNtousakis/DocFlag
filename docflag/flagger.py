@@ -67,13 +67,25 @@ _AFTER_HIGHLIGHT = {
 
 @dataclass
 class FlagResult:
-    """Matches per word, keyed by the word as written in the word list."""
+    """Matches per word, keyed by the word as written in the word list, and
+    replacements made, keyed by the (source, target) pair."""
 
     counts: dict[str, int] = field(default_factory=dict)
+    replacements: dict[tuple[str, str], int] = field(default_factory=dict)
 
     @property
     def total(self) -> int:
         return sum(self.counts.values())
+
+    @property
+    def total_replacements(self) -> int:
+        return sum(self.replacements.values())
+
+
+def normalise_term(word: str) -> str:
+    """Collapse every run of whitespace to one space. Spaces at the start or
+    end are kept: they are part of the term (' .' is not '.')."""
+    return re.sub(r"\s+", " ", word)
 
 
 def _fold(text: str) -> tuple[str, list[int]]:
@@ -91,14 +103,40 @@ def _fold(text: str) -> tuple[str, list[int]]:
 
 def _terms(words: Iterable[str]) -> list[str]:
     """The list's distinct terms as written, longest first so 'internal use
-    only' wins over 'internal'. Terms that are nothing but '*' are dropped:
-    they would match every word."""
+    only' wins over 'internal'. Terms that are nothing but '*' and spaces are
+    dropped: they would match every word or every space."""
     terms: dict[str, str] = {}
     for word in words:
-        word = " ".join(word.split())
+        word = normalise_term(word)
         if word.replace("*", "").strip():
             terms.setdefault(_fold(word)[0].casefold(), word)
     return sorted(terms.values(), key=len, reverse=True)
+
+
+def _compile(terms: list[str], wildcards: bool, space: str) -> Optional[re.Pattern]:
+    """One case-insensitive regex for `terms` (to be run on _fold()ed text),
+    capture group N being terms[N-1]. A space in a term matches any run of
+    `space`. An end of a term that is a letter must be a word boundary in
+    the text; an end that is punctuation or a space need not be, so 'τηλ.'
+    also matches in 'τηλ.2101234'."""
+    alternatives = []
+    for term in terms:
+        folded = _fold(term)[0]
+        body = "".join(
+            space if piece == " "
+            else r"\w*".join(re.escape(p) for p in piece.split("*")) if wildcards
+            else re.escape(piece)
+            for piece in re.split(r"( )", folded) if piece
+        )
+        edge = r"[\w*]" if wildcards else r"\w"
+        if re.match(edge, folded):
+            body = r"(?<!\w)" + body
+        if re.search(edge + "$", folded):
+            body += r"(?!\w)"
+        alternatives.append("(%s)" % body)
+    if not alternatives:
+        return None
+    return re.compile("|".join(alternatives), re.IGNORECASE)
 
 
 def build_pattern(words: Iterable[str]) -> Optional[re.Pattern]:
@@ -106,30 +144,60 @@ def build_pattern(words: Iterable[str]) -> Optional[re.Pattern]:
     (to be run on _fold()ed text), or None if the list has nothing in it.
     '*' in a term stands for any run of letters. Capture group N is the
     N-th entry of _terms(words)."""
-    alternatives = []
-    for term in _terms(words):
-        parts = [
-            r"\w*".join(re.escape(piece) for piece in part.split("*"))
-            for part in _fold(term)[0].split()
-        ]
-        alternatives.append("(%s)" % r"\s+".join(parts))
-    if not alternatives:
-        return None
-    return re.compile(
-        r"(?<!\w)(?:%s)(?!\w)" % "|".join(alternatives), re.IGNORECASE
-    )
+    return _compile(_terms(words), wildcards=True, space=r"\s+")
+
+
+def build_replace_pattern(sources: Iterable[str]) -> Optional[re.Pattern]:
+    """Like build_pattern, but '*' is an ordinary character (a wildcard
+    would replace whole families of words with one fixed text), and spaces
+    never match a tab or line break, which cannot be rewritten as text."""
+    return _compile(_terms(sources), wildcards=False, space=r"[^\S\t\n]+")
+
+
+def _upper(text: str) -> str:
+    """Upper case; Greek capitals drop the tonos (ΤΗΛΕΦΩΝΟ, not ΤΗΛΈΦΩΝΟ)."""
+    text = unicodedata.normalize("NFD", text.upper())
+    text = re.sub(r"([\u0370-\u03ff][\u0300-\u036f]*?)\u0301", r"\1", text)
+    return unicodedata.normalize("NFC", text)
+
+
+def match_case(found: str, replacement: str) -> str:
+    """Raise the replacement to the case of the text it replaces: 'ΤΗΛ.'
+    gives 'ΤΗΛΕΦΩΝΟ', 'Τηλ.' gives 'Τηλέφωνο'. It is never lowered, so a
+    replacement written in capitals stays that way."""
+    letters = [c for c in found if c.isalpha()]
+    if not letters or not letters[0].isupper():
+        return replacement
+    if len(letters) > 1 and all(c.isupper() for c in letters):
+        return _upper(replacement)
+    for i, char in enumerate(replacement):
+        if char.isalpha():
+            return replacement[:i] + char.upper() + replacement[i + 1:]
+    return replacement
 
 
 def flag_document(
-    src: str, dst: str, words: Iterable[str], colour: str = "yellow"
+    src: str,
+    dst: str,
+    words: Iterable[str],
+    colour: str = "yellow",
+    replacements: Iterable[tuple[str, str]] = (),
+    replace_colour: Optional[str] = None,
 ) -> FlagResult:
-    """Write a copy of `src` to `dst` with every match highlighted."""
+    """Write a copy of `src` to `dst` with every (source, target) pair in
+    `replacements` applied, then every match of `words` highlighted in
+    `colour`. Replaced text is highlighted in `replace_colour`, if given."""
     words = list(words)
+    targets: dict[str, tuple[str, str]] = {}
+    for source, target in replacements:
+        targets.setdefault(_fold(normalise_term(source))[0].casefold(), (source, target))
     pattern = build_pattern(words)
-    if pattern is None:
-        raise ValueError("Η λίστα λέξεων είναι κενή.")
-    if colour not in HIGHLIGHT_COLOURS:
-        raise ValueError(f"Το '{colour}' δεν είναι χρώμα επισήμανσης του Word.")
+    replace_pattern = build_replace_pattern(source for source, _ in targets.values())
+    if pattern is None and replace_pattern is None:
+        raise ValueError("Οι λίστες λέξεων και αντικαταστάσεων είναι κενές.")
+    for c in (colour, replace_colour):
+        if c is not None and c not in HIGHLIGHT_COLOURS:
+            raise ValueError(f"Το '{c}' δεν είναι χρώμα επισήμανσης του Word.")
 
     try:
         pkg = Package.load(src)
@@ -139,13 +207,20 @@ def flag_document(
         raise ValueError("Αυτό δεν είναι έγκυρο αρχείο .docx.")
 
     terms = _terms(words)
+    pairs = [
+        targets[_fold(term)[0].casefold()]
+        for term in _terms(source for source, _ in targets.values())
+    ]
     result = FlagResult()
     for part_name in list(pkg.parts):
         if not _TEXT_PART_RE.match(part_name):
             continue
         root = pkg.get_xml(part_name)
         for paragraph in list(root.iter(W_P)):
-            _flag_paragraph(paragraph, pattern, colour, terms, result)
+            if replace_pattern is not None:
+                _replace_paragraph(paragraph, replace_pattern, replace_colour, pairs, result)
+            if pattern is not None:
+                _flag_paragraph(paragraph, pattern, colour, terms, result)
     pkg.save(dst)
     return result
 
@@ -160,14 +235,10 @@ def _own_runs(container: etree._Element) -> Iterator[etree._Element]:
             yield from _own_runs(child)
 
 
-def _flag_paragraph(
-    paragraph: etree._Element,
-    pattern: re.Pattern,
-    colour: str,
-    terms: list[str],
-    result: FlagResult,
-) -> None:
-    run_atoms = []  # (run, [(child, start, end), ...])
+def _paragraph_text(paragraph: etree._Element):
+    """The paragraph's text, and its runs with the span of the text each of
+    their children holds: [(run, [(child, start, end), ...]), ...]."""
+    run_atoms = []
     buffer = []
     pos = 0
     for run in _own_runs(paragraph):
@@ -184,53 +255,97 @@ def _flag_paragraph(
             pos += len(text)
         if atoms:
             run_atoms.append((run, atoms))
+    return "".join(buffer), run_atoms
 
-    text = "".join(buffer)
+
+def _find(pattern: re.Pattern, text: str) -> list[tuple[int, int, int]]:
+    """(start, end, term index) of every match in the real text."""
     folded, origin = _fold(text)
-    intervals = []
-    matched = []
+    found = []
     for match in pattern.finditer(folded):
         # Map back to the real text; the end also takes in any accents that
         # trail the last matched letter.
         end = origin[match.end()] if match.end() < len(origin) else len(text)
-        intervals.append((origin[match.start()], end))
-        matched.append(terms[match.lastindex - 1])
-    if not intervals:
-        return
+        found.append((origin[match.start()], end, match.lastindex - 1))
+    return found
 
-    # Text boxes are stored twice (a DrawingML version and a VML fallback);
-    # highlight both, but count the match once.
-    if not any(a.tag == MC_FALLBACK for a in paragraph.iterancestors()):
-        for word in matched:
-            result.counts[word] = result.counts.get(word, 0) + 1
 
+def _counts_once(paragraph: etree._Element) -> bool:
+    """Text boxes are stored twice (a DrawingML version and a VML fallback);
+    both get changed, but only the first one counts."""
+    return not any(a.tag == MC_FALLBACK for a in paragraph.iterancestors())
+
+
+def _rewrite(run_atoms, intervals, colour, texts=None) -> None:
+    """Split every run that `intervals` touch (see _split_run)."""
     for run, atoms in run_atoms:
         start, end = atoms[0][1], atoms[-1][2]
         if any(a < end and b > start for a, b in intervals):
-            _split_run(run, atoms, intervals, colour)
+            _split_run(run, atoms, intervals, colour, texts)
+
+
+def _flag_paragraph(
+    paragraph: etree._Element,
+    pattern: re.Pattern,
+    colour: str,
+    terms: list[str],
+    result: FlagResult,
+) -> None:
+    text, run_atoms = _paragraph_text(paragraph)
+    found = _find(pattern, text)
+    if not found:
+        return
+    if _counts_once(paragraph):
+        for _, _, index in found:
+            word = terms[index]
+            result.counts[word] = result.counts.get(word, 0) + 1
+    _rewrite(run_atoms, [(a, b) for a, b, _ in found], colour)
+
+
+def _replace_paragraph(
+    paragraph: etree._Element,
+    pattern: re.Pattern,
+    colour: Optional[str],
+    pairs: list[tuple[str, str]],
+    result: FlagResult,
+) -> None:
+    text, run_atoms = _paragraph_text(paragraph)
+    found = _find(pattern, text)
+    if not found:
+        return
+    if _counts_once(paragraph):
+        for _, _, index in found:
+            pair = pairs[index]
+            result.replacements[pair] = result.replacements.get(pair, 0) + 1
+    texts = [match_case(text[a:b], pairs[index][1]) for a, b, index in found]
+    _rewrite(run_atoms, [(a, b) for a, b, _ in found], colour, texts)
 
 
 def _cut(start: int, end: int, intervals: list[tuple[int, int]]):
-    """Split [start, end) into (start, end, is_match) pieces."""
+    """Split [start, end) into (start, end, i) pieces, i being the index of
+    the interval the piece lies in, or None between intervals."""
     pos = start
-    for a, b in intervals:
+    for i, (a, b) in enumerate(intervals):
         if b <= pos:
             continue
         if a >= end:
             break
         if a > pos:
-            yield pos, a, False
+            yield pos, a, None
             pos = a
         stop = min(b, end)
-        yield pos, stop, True
+        yield pos, stop, i
         pos = stop
     if pos < end:
-        yield pos, end, False
+        yield pos, end, None
 
 
-def _split_run(run, atoms, intervals, colour: str) -> None:
+def _split_run(run, atoms, intervals, colour: Optional[str], texts=None) -> None:
     """Replace `run` with consecutive runs carrying the same formatting, so
-    that matched text sits in runs of its own, and highlight those."""
+    that matched text sits in runs of its own, and highlight those (unless
+    `colour` is None). With `texts`, interval i's text becomes texts[i]:
+    written where the match starts, the rest of the match is dropped (it
+    may go on into the following runs)."""
     spans = {id(child): (start, end) for child, start, end in atoms}
     rpr = run.find(W_RPR)
 
@@ -252,13 +367,18 @@ def _split_run(run, atoms, intervals, colour: str) -> None:
             emit(child, None)
         elif child.tag == W_T:
             text = child.text
-            for a, b, flag in _cut(span[0], span[1], intervals):
+            for a, b, i in _cut(span[0], span[1], intervals):
+                piece_text = text[a - span[0]: b - span[0]]
+                if texts is not None and i is not None:
+                    piece_text = texts[i] if a == intervals[i][0] else ""
+                    if not piece_text:
+                        continue
                 piece = etree.Element(W_T, nsmap=run.nsmap)
                 piece.set(XML_SPACE, "preserve")
-                piece.text = text[a - span[0]: b - span[0]]
-                emit(piece, flag)
+                piece.text = piece_text
+                emit(piece, i is not None)
         else:
-            emit(child, next(_cut(span[0], span[1], intervals))[2])
+            emit(child, next(_cut(span[0], span[1], intervals))[2] is not None)
 
     new_runs = []
     for flag, elements in groups:
@@ -266,13 +386,14 @@ def _split_run(run, atoms, intervals, colour: str) -> None:
         if rpr is not None:
             new_run.append(copy.deepcopy(rpr))
         new_run.extend(elements)
-        if flag:
+        if flag and colour is not None:
             _set_highlight(new_run, colour)
         new_runs.append(new_run)
-    new_runs[-1].tail = run.tail
 
     parent = run.getparent()
     index = parent.index(run)
+    if new_runs:
+        new_runs[-1].tail = run.tail
     parent.remove(run)
     for offset, new_run in enumerate(new_runs):
         parent.insert(index + offset, new_run)

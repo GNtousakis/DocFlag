@@ -6,12 +6,13 @@ import sys
 from pathlib import Path
 
 # PyInstaller keeps __file__ pointing inside the bundle, so this works frozen
-# as long as the .spec ships default_words.txt into a "docflag" folder.
+# as long as the .spec ships the default lists into a "docflag" folder.
 DEFAULT_WORDS_FILE = Path(__file__).parent / "default_words.txt"
+DEFAULT_REPLACEMENTS_FILE = Path(__file__).parent / "default_replacements.txt"
 
 
 def data_dir() -> Path:
-    """Folder for the shared word list: next to the .exe when packaged, in
+    """Folder for the shared lists: next to the .exe when packaged, in
     the repo root otherwise. DOCFLAG_DATA_DIR overrides both."""
     override = os.environ.get("DOCFLAG_DATA_DIR")
     if override:

@@ -17,7 +17,7 @@ from pathlib import Path
 from nicegui import __version__ as NICEGUI_VERSION
 from nicegui import events, run, ui
 
-from . import wordlist
+from . import replacements, wordlist
 from .flagger import HIGHLIGHT_COLOURS, FlagResult, flag_document
 from .legacy_convert import convert_doc, is_legacy_doc
 
@@ -38,6 +38,7 @@ COLOUR_LABELS = {
     "darkBlue": "Σκούρο μπλε", "darkGray": "Σκούρο γκρι",
 }
 assert list(COLOUR_LABELS) == HIGHLIGHT_COLOURS
+NO_HIGHLIGHT = "none"
 
 # NiceGUI loads all of its styling through CSS cascade layers (@layer), which
 # browsers older than Chrome/Edge 99 and Firefox 97 silently drop: the page
@@ -137,6 +138,21 @@ def _unique_names(names: list[str]) -> list[str]:
     return unique
 
 
+def visible(text: str) -> str:
+    """Show the spaces at the ends of a word, which a chip would hide."""
+    stripped = text.strip(" ")
+    if not stripped:
+        return "␣" * len(text)
+    lead = len(text) - len(text.lstrip(" "))
+    trail = len(text) - len(text.rstrip(" "))
+    return "␣" * lead + stripped + "␣" * trail
+
+
+def pair_label(source: str, target: str) -> str:
+    """'τηλ. → τηλέφωνο'."""
+    return f"{visible(source)} → {visible(target) if target else '(διαγραφή)'}"
+
+
 def _count(n: int, one: str, many: str) -> str:
     """'1 λέξη' / '3 λέξεις'."""
     return f"{n} {one if n == 1 else many}"
@@ -145,17 +161,19 @@ def _count(n: int, one: str, many: str) -> str:
 def _report_csv(outcomes: list[Outcome]) -> bytes:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(["Αρχείο", "Λέξη", "Εμφανίσεις"])
+    writer.writerow(["Αρχείο", "Ενέργεια", "Λέξη", "Εμφανίσεις"])
     for outcome in outcomes:
+        name = outcome.doc.display_name
         if outcome.result is None:
-            writer.writerow([outcome.doc.display_name, f"ΣΦΑΛΜΑ: {outcome.error}", ""])
-        elif not outcome.result.counts:
-            writer.writerow([outcome.doc.display_name, "(καμία εμφάνιση)", 0])
-        else:
-            for word, count in sorted(
-                outcome.result.counts.items(), key=lambda item: -item[1]
-            ):
-                writer.writerow([outcome.doc.display_name, word, count])
+            writer.writerow([name, "", f"ΣΦΑΛΜΑ: {outcome.error}", ""])
+            continue
+        counts, replaced = outcome.result.counts, outcome.result.replacements
+        if not counts and not replaced:
+            writer.writerow([name, "", "(καμία εμφάνιση)", 0])
+        for (source, target), count in sorted(replaced.items(), key=lambda item: -item[1]):
+            writer.writerow([name, "Αντικατάσταση", f"{source} → {target}", count])
+        for word, count in sorted(counts.items(), key=lambda item: -item[1]):
+            writer.writerow([name, "Επισήμανση", word, count])
     # BOM so Excel opens non-ASCII words correctly.
     return buffer.getvalue().encode("utf-8-sig")
 
@@ -236,8 +254,7 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                     ).mark("confirm-yes")
             return bool(await dialog)
 
-        def add_words(text: str, source) -> None:
-            new = wordlist.parse_lines(text)
+        def add_words(new: list[str], source) -> None:
             if not new:
                 ui.notify("Γράψτε πρώτα μια λέξη ή φράση.", type="warning")
                 return
@@ -270,7 +287,7 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                 ), type="positive")
 
         def export_words() -> None:
-            ui.download("\n".join(wordlist.load()).encode("utf-8"), "docflag_words.txt")
+            ui.download(wordlist.format_lines(wordlist.load()).encode("utf-8"), "docflag_words.txt")
 
         async def reset_words() -> None:
             if await confirm("Να αντικατασταθεί η κοινόχρηστη λίστα λέξεων με την προεπιλεγμένη;"):
@@ -281,6 +298,69 @@ def create_app(port: int = DEFAULT_PORT) -> None:
             if await confirm("Να αφαιρεθούν όλες οι λέξεις από την κοινόχρηστη λίστα;"):
                 wordlist.save([])
                 word_chips.refresh()
+
+        # -- replacements ---------------------------------------------------
+
+        def add_replacements(new: list, skipped: int, *sources) -> None:
+            if not new:
+                ui.notify(
+                    "Γράψτε πρώτα το κείμενο που θα αντικατασταθεί." if not skipped
+                    else "Γράψτε κάθε αντικατάσταση στη μορφή: τηλ. => τηλέφωνο",
+                    type="warning",
+                )
+                return
+            before = replacements.load()
+            after = replacements.add(new)
+            added = len(after) - len(before)
+            for source in sources:
+                source.value = ""
+            replacement_chips.refresh()
+            message = (
+                "Προστέθηκε 1 αντικατάσταση" if added == 1
+                else f"Προστέθηκαν {added} αντικαταστάσεις" if added
+                else "Η αντικατάσταση ενημερώθηκε" if after != before
+                else "Υπάρχει ήδη στη λίστα"
+            )
+            if skipped:
+                message += (
+                    f" — {_count(skipped, 'γραμμή παραλείφθηκε', 'γραμμές παραλείφθηκαν')}"
+                    " (η μορφή είναι: τηλ. => τηλέφωνο)"
+                )
+            ui.notify(
+                message,
+                type="warning" if skipped else "positive" if after != before else "info",
+            )
+
+        def add_one_replacement() -> None:
+            source = wordlist.parse_entry(replace_from.value or "")
+            target = wordlist.parse_entry(replace_to.value or "")
+            new = replacements.normalise([(source, target)])
+            add_replacements(new, 0, *((replace_from, replace_to) if new else ()))
+
+        def remove_replacement(source: str) -> None:
+            replacements.remove(source)
+            replacement_chips.refresh()
+
+        async def handle_replacement_import(e: events.UploadEventArguments) -> None:
+            text = wordlist.decode_text(await e.file.read())
+            replacement_import.reset()
+            add_replacements(*replacements.parse_lines(text))
+
+        def export_replacements() -> None:
+            ui.download(
+                replacements.format_lines(replacements.load()).encode("utf-8"),
+                "docflag_replacements.txt",
+            )
+
+        async def reset_replacements() -> None:
+            if await confirm("Να αντικατασταθεί η κοινόχρηστη λίστα αντικαταστάσεων με την προεπιλεγμένη;"):
+                replacements.reset()
+                replacement_chips.refresh()
+
+        async def remove_all_replacements() -> None:
+            if await confirm("Να αφαιρεθούν όλες οι αντικαταστάσεις από την κοινόχρηστη λίστα;"):
+                replacements.save([])
+                replacement_chips.refresh()
 
         # -- layout ---------------------------------------------------------
 
@@ -339,8 +419,11 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                     "Ολόκληρες λέξεις και φράσεις· κεφαλαία/πεζά και τόνοι "
                     "αγνοούνται. Βάλτε * στο τέλος μιας λέξης για οποιαδήποτε "
                     "κατάληξη (το εμπιστευτικ* βρίσκει εμπιστευτικά, "
-                    "εμπιστευτικού). Η λίστα είναι κοινόχρηστη: οι αλλαγές "
-                    "αποθηκεύονται και ισχύουν για όλους."
+                    "εμπιστευτικού). Τα κενά μετράνε: το « .» (κενό και "
+                    "τελεία) βρίσκει μόνο τελεία με κενό πριν από αυτή· στην "
+                    "επικόλληση λίστας γράψτε το σε εισαγωγικά, \" .\". Η "
+                    "λίστα είναι κοινόχρηστη: οι αλλαγές αποθηκεύονται και "
+                    "ισχύουν για όλους."
                 ).classes("text-sm text-gray-500")
 
                 @ui.refreshable
@@ -354,7 +437,7 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                     with ui.row().classes("gap-1"):
                         for word in words:
                             ui.chip(
-                                word,
+                                visible(word),
                                 removable=True,
                                 on_value_change=lambda _, w=word: remove_word(w),
                             ).props("outline")
@@ -365,12 +448,15 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                     new_word = ui.input("Προσθήκη λέξης ή φράσης").classes(
                         "flex-grow"
                     ).mark("new-word")
-                    new_word.on(
-                        "keydown.enter", lambda: add_words(new_word.value, new_word)
-                    )
+                    def add_one_word() -> None:
+                        add_words(
+                            wordlist.normalise([wordlist.parse_entry(new_word.value or "")]),
+                            new_word,
+                        )
+
+                    new_word.on("keydown.enter", add_one_word)
                     ui.button(
-                        "Προσθήκη", icon="add",
-                        on_click=lambda: add_words(new_word.value, new_word),
+                        "Προσθήκη", icon="add", on_click=add_one_word,
                     ).props("unelevated").mark("add-word")
 
                 with ui.expansion("Επικόλληση λίστας, εισαγωγή, εξαγωγή, επαναφορά").classes(
@@ -381,7 +467,7 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                     ).mark("bulk-words")
                     ui.button(
                         "Προσθήκη όλων", icon="playlist_add",
-                        on_click=lambda: add_words(bulk.value, bulk),
+                        on_click=lambda: add_words(wordlist.parse_lines(bulk.value or ""), bulk),
                     ).props("flat").mark("bulk-add")
                     import_upload = ui.upload(
                         label="Εισαγωγή αρχείου .txt (μία λέξη ανά γραμμή)",
@@ -402,10 +488,90 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                         ).props("flat color=negative").mark("remove-all-words")
 
             with ui.card().classes("w-full"):
-                ui.label("3. Επισήμανση").classes("text-lg font-semibold")
-                colour = ui.select(
-                    COLOUR_LABELS, value="yellow", label="Χρώμα επισήμανσης"
-                ).classes("w-48").mark("colour")
+                ui.label("3. Αντικαταστάσεις").classes("text-lg font-semibold")
+                ui.label(
+                    "Κάθε κείμενο της λίστας αντικαθίσταται στα αντίγραφα πριν "
+                    "από την επισήμανση. Κεφαλαία/πεζά και τόνοι αγνοούνται "
+                    "στην αναζήτηση, και η αντικατάσταση παίρνει τα κεφαλαία "
+                    "του κειμένου που αντικαθιστά (Τηλ. → Τηλέφωνο, ΤΗΛ. → "
+                    "ΤΗΛΕΦΩΝΟ). Τα κενά μετράνε, όπως και στις λέξεις: « .» "
+                    "→ «.» σβήνει το κενό πριν από τελεία. Η λίστα είναι "
+                    "κοινόχρηστη."
+                ).classes("text-sm text-gray-500")
+
+                @ui.refreshable
+                def replacement_chips() -> None:
+                    pairs = replacements.load()
+                    if not pairs:
+                        ui.label("Η λίστα είναι κενή.").classes(
+                            "text-gray-400 italic py-2"
+                        )
+                        return
+                    with ui.row().classes("gap-1"):
+                        for source, target in pairs:
+                            ui.chip(
+                                pair_label(source, target),
+                                removable=True,
+                                on_value_change=lambda _, s=source: remove_replacement(s),
+                            ).props("outline")
+
+                replacement_chips()
+
+                with ui.row().classes("items-center w-full gap-2"):
+                    replace_from = ui.input("Αντικατάσταση του").classes(
+                        "flex-grow"
+                    ).mark("replace-from")
+                    ui.icon("arrow_forward", color="primary")
+                    replace_to = ui.input("με").classes("flex-grow").mark("replace-to")
+                    for field in (replace_from, replace_to):
+                        field.on("keydown.enter", add_one_replacement)
+                    ui.button(
+                        "Προσθήκη", icon="add", on_click=add_one_replacement,
+                    ).props("unelevated").mark("add-replacement")
+
+                with ui.expansion("Επικόλληση λίστας, εισαγωγή, εξαγωγή, επαναφορά").classes(
+                    "w-full"
+                ):
+                    bulk_replacements = ui.textarea(
+                        "Μία ανά γραμμή, π.χ. τηλ. => τηλέφωνο"
+                    ).classes("w-full").mark("bulk-replacements")
+                    ui.button(
+                        "Προσθήκη όλων", icon="playlist_add",
+                        on_click=lambda: add_replacements(
+                            *replacements.parse_lines(bulk_replacements.value or ""),
+                            bulk_replacements,
+                        ),
+                    ).props("flat").mark("bulk-add-replacements")
+                    replacement_import = ui.upload(
+                        label="Εισαγωγή αρχείου .txt (μία αντικατάσταση ανά γραμμή)",
+                        auto_upload=True,
+                        on_upload=handle_replacement_import,
+                    ).props("accept=.txt flat bordered").classes("w-full").mark(
+                        "import-replacements"
+                    )
+                    with ui.row().classes("gap-2"):
+                        ui.button(
+                            "Εξαγωγή λίστας", icon="download", on_click=export_replacements
+                        ).props("flat").mark("export-replacements")
+                        ui.button(
+                            "Επαναφορά προεπιλογών", icon="restart_alt",
+                            on_click=reset_replacements,
+                        ).props("flat").mark("reset-replacements")
+                        ui.button(
+                            "Αφαίρεση όλων", icon="delete_sweep",
+                            on_click=remove_all_replacements,
+                        ).props("flat color=negative").mark("remove-all-replacements")
+
+            with ui.card().classes("w-full"):
+                ui.label("4. Επισήμανση").classes("text-lg font-semibold")
+                with ui.row().classes("gap-4"):
+                    colour = ui.select(
+                        COLOUR_LABELS, value="yellow", label="Χρώμα επισήμανσης"
+                    ).classes("w-48").mark("colour")
+                    replace_colour = ui.select(
+                        {NO_HIGHLIGHT: "Χωρίς επισήμανση", **COLOUR_LABELS},
+                        value="green", label="Χρώμα αντικαταστάσεων",
+                    ).classes("w-48").mark("replace-colour")
                 ui.label(
                     "Τα αρχικά σας αρχεία δεν αλλάζουν: λαμβάνετε επισημασμένα "
                     "αντίγραφα .docx (ένα .zip με σύνοψη αν είναι περισσότερα)."
@@ -427,15 +593,23 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                     )
                 return
             total = outcome.result.total
-            border = "border-green-500" if total else "border-gray-300"
+            replaced = outcome.result.total_replacements
+            summary = " · ".join(
+                [_count(total, "εμφάνιση", "εμφανίσεις")] * bool(total)
+                + [_count(replaced, "αντικατάσταση", "αντικαταστάσεις")] * bool(replaced)
+            )
+            border = "border-green-500" if summary else "border-gray-300"
             with ui.card().classes(f"w-full border-l-4 {border}"):
                 with ui.row().classes("items-center justify-between w-full"):
                     ui.label(outcome.doc.display_name).classes("font-semibold truncate")
-                    ui.label(
-                        _count(total, "εμφάνιση", "εμφανίσεις") if total
-                        else "Καμία εμφάνιση"
-                    ).classes("text-sm")
+                    ui.label(summary or "Καμία εμφάνιση").classes("text-sm")
                 with ui.row().classes("gap-1"):
+                    for (source, target), count in sorted(
+                        outcome.result.replacements.items(), key=lambda item: -item[1]
+                    ):
+                        ui.badge(f"{pair_label(source, target)} × {count}").props(
+                            "outline color=positive"
+                        )
                     for word, count in sorted(
                         outcome.result.counts.items(), key=lambda item: -item[1]
                     ):
@@ -447,9 +621,17 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                 ui.notify("Προσθέστε πρώτα τουλάχιστον ένα αρχείο Word.", type="warning")
                 return
             words = wordlist.load()
-            if not words:
-                ui.notify("Η λίστα λέξεων είναι κενή: προσθέστε πρώτα μια λέξη.", type="warning")
+            pairs = replacements.load()
+            if not words and not pairs:
+                ui.notify(
+                    "Οι λίστες λέξεων και αντικαταστάσεων είναι κενές: "
+                    "προσθέστε πρώτα μια λέξη.",
+                    type="warning",
+                )
                 return
+            replace_highlight = (
+                None if replace_colour.value == NO_HIGHLIGHT else replace_colour.value
+            )
 
             flag_button.props("loading")
             flag_button.set_enabled(False)
@@ -469,7 +651,7 @@ def create_app(port: int = DEFAULT_PORT) -> None:
                         # Off the event loop so other users aren't blocked.
                         outcome.result = await run.io_bound(
                             flag_document, doc.path, outcome.output_path,
-                            words, colour.value,
+                            words, colour.value, pairs, replace_highlight,
                         )
                     except Exception as exc:  # noqa: BLE001
                         outcome.error = str(exc) or type(exc).__name__

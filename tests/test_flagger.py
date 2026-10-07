@@ -12,7 +12,7 @@ from lxml import etree
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from docflag.flagger import build_pattern, flag_document
+from docflag.flagger import build_pattern, flag_document, match_case
 from docflag.package_io import Package
 from docflag.xml_utils import NSMAP, qn
 from tests.fixtures.make_fixtures import build_plain, build_sample
@@ -182,6 +182,94 @@ def test_final_sigma(tmp_path):
 def test_longest_phrase_wins():
     pattern = build_pattern(["internal", "internal use only"])
     assert pattern.search("for internal use only").group() == "internal use only"
+
+
+def test_punctuation_ends_need_no_word_boundary(tmp_path):
+    counts, marked = _flag_text(tmp_path, "τηλ.2101234 και τηλ. 210", ["τηλ."])
+    assert counts == {"τηλ.": 2}
+    assert marked == ["τηλ.", "τηλ."]
+
+
+def test_spaces_at_the_ends_of_a_word_count(tmp_path):
+    counts, marked = _flag_text(tmp_path, "Ένα . και ένα.", [" ."])
+    assert counts == {" .": 1}
+    assert marked == [" ."]
+
+
+def _replace(tmp_path, paragraphs, pairs, words=(), **kwargs):
+    src = str(tmp_path / "a.docx")
+    doc = Document()
+    for runs in paragraphs:
+        paragraph = doc.add_paragraph()
+        for text in ([runs] if isinstance(runs, str) else runs):
+            paragraph.add_run(text)
+    doc.save(src)
+    dst = str(tmp_path / "b.docx")
+    result = flag_document(src, dst, words, replacements=pairs, **kwargs)
+    return result, Document(dst)
+
+
+def test_replacements_follow_the_case_of_the_text(tmp_path):
+    result, output = _replace(
+        tmp_path, ["τηλ. 210, Τηλ. 211, ΤΗΛ.: 212, τήλ.2101"], [("τηλ.", "τηλέφωνο")]
+    )
+    assert output.paragraphs[0].text == (
+        "τηλέφωνο 210, Τηλέφωνο 211, ΤΗΛΕΦΩΝΟ: 212, τηλέφωνο2101"
+    )
+    assert result.replacements == {("τηλ.", "τηλέφωνο"): 4}
+    assert result.counts == {}
+    assert _highlighted(output.paragraphs[0]) == []
+
+
+def test_match_case():
+    assert match_case("abc", "ΑΦΜ") == "ΑΦΜ"
+    assert match_case("Κ.", "κύριος") == "Κύριος"
+    assert match_case("ΟΔ.", "οδός") == "ΟΔΟΣ"
+    assert match_case(" .", ".") == "."
+
+
+def test_replacing_spaces(tmp_path):
+    _, output = _replace(
+        tmp_path, ["Τέλος . Αρχή  , τέλος.", ["Σπασμένο", " ", ". Εδώ"]],
+        [(" .", "."), (" ,", ",")],
+    )
+    assert output.paragraphs[0].text == "Τέλος. Αρχή, τέλος."
+    assert output.paragraphs[1].text == "Σπασμένο. Εδώ"
+
+
+def test_replacement_across_runs_takes_the_first_runs_formatting(tmp_path):
+    src = str(tmp_path / "a.docx")
+    doc = Document()
+    paragraph = doc.add_paragraph("Δείτε ")
+    paragraph.add_run("τη").bold = True
+    paragraph.add_run("λ. εδώ")
+    doc.save(src)
+    dst = str(tmp_path / "b.docx")
+    flag_document(src, dst, [], replacements=[("τηλ.", "τηλέφωνο")], replace_colour="green")
+    runs = Document(dst).paragraphs[0].runs
+    assert [(r.text, r.bold) for r in runs] == [
+        ("Δείτε ", None), ("τηλέφωνο", True), (" εδώ", None),
+    ]
+    assert runs[1].font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN
+
+
+def test_replacements_come_before_flagging_and_can_delete(tmp_path):
+    result, output = _replace(
+        tmp_path, ["TODO: τηλ. draft*x"],
+        [("τηλ.", "τηλέφωνο"), ("TODO: ", ""), ("*x", "!")],
+        words=["τηλέφωνο"],
+    )
+    assert output.paragraphs[0].text == "τηλέφωνο draft!"
+    assert _highlighted(output.paragraphs[0]) == ["τηλέφωνο"]
+    assert result.counts == {"τηλέφωνο": 1}
+    assert result.replacements == {
+        ("τηλ.", "τηλέφωνο"): 1, ("TODO: ", ""): 1, ("*x", "!"): 1,
+    }
+
+
+def test_replacements_leave_tabs_and_breaks_alone(tmp_path):
+    _, output = _replace(tmp_path, ["a\t.\nb ."], [(" .", ".")])
+    assert output.paragraphs[0].text == "a\t.\nb."
 
 
 def test_empty_list_and_bad_file_are_rejected(tmp_path):
