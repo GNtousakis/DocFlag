@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from docflag.pdftext import minimal_pdf
 from tests.test_gui import DOCX_CONTENT_TYPE, _upload
 
 pytestmark = pytest.mark.nicegui_main_file("docflag.py")
@@ -135,3 +136,29 @@ async def test_image_mode(user: User) -> None:
     await user.should_see(marker="count-regions")
     label = next(iter(user.find(marker="count-regions").elements))
     assert label.text != "Περιοχές διαφορών: 0"
+
+
+def _pdf(price: str, pages: int = 1) -> bytes:
+    table = [(72, 80, "Price list"), (72, 120, "Item"), (232, 120, "Price"),
+             (72, 142, "Apples"), (232, 142, price)]
+    return minimal_pdf([table] + [[(72, 80, "Prices include VAT.")]] * (pages - 1))
+
+
+async def test_two_pdf_files(user: User) -> None:
+    await _open(user)
+    await _upload(user, "upload-A", "a.pdf", _pdf("1,20"), "application/pdf")
+    await _upload(user, "upload-B", "b.pdf", _pdf("1,50", pages=2), "application/pdf")
+    await _wait_for(lambda: _textarea(user, "A").value and _textarea(user, "B").value)
+    assert _textarea(user, "A").value == "Price list\nItem | Price\nApples | 1,20"
+    await user.should_see("Κείμενο από το 'b.pdf' (2 σελίδες).")
+
+    user.find(marker="compare-button").click()
+    await user.should_see("Αλλαγές: 1")
+    await user.should_see("Προσθήκες: 1")
+
+
+async def test_pdf_in_image_mode_uses_the_first_page(user: User) -> None:
+    await _open(user)
+    next(iter(user.find(marker="compare-mode").elements)).value = "image"
+    await _upload(user, "upload-A", "a.pdf", _pdf("1,20", pages=3), "application/pdf")
+    await user.should_see("Η πρώτη σελίδα του 'a.pdf' (3 σελίδες).")

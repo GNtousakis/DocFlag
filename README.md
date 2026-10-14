@@ -45,13 +45,17 @@ percentage.
     comparing, and remove a screenshot (and its text) with its delete button.
   - **A Word file** (`.docx` or `.doc`): its text is read exactly, no OCR.
     It replaces what the side held.
+  - **A PDF**: pages with text are read exactly, and their tables are
+    rebuilt from the word positions; scanned pages are read with OCR. It
+    replaces what the side held.
 
   Comparison is word by word, ignoring accents and final sigma, and
   optionally case and punctuation. Tables (from Word, or reconstructed from
-  screenshots) are compared row by row and cell by cell.
-- **Image mode** — one screenshot per side, compared as pictures: B is
-  aligned onto A and the changed regions are boxed (with an optional heat
-  map); the sensitivity can be lowered or raised.
+  PDFs and screenshots) are compared row by row and cell by cell.
+- **Image mode** — one screenshot (or the first page of a PDF) per side,
+  compared as pictures: B is aligned onto A and the changed regions are
+  boxed (with an optional heat map); the sensitivity can be lowered or
+  raised.
 
 Greek OCR needs the Greek OCR language on the PC that runs DocFlag
 (Settings > Time & language > Language & region > Add a language > Greek,
@@ -121,7 +125,9 @@ pyinstaller packaging/docflag.spec --noconfirm
 - Compare: there are no global hotkeys or drag-to-select screen overlay as in
   the DocDiff desktop app — screenshots are pasted or uploaded. Greek OCR is
   not tested in CI (the build machine only has English OCR); `DocFlag.exe
-  --selftest report.txt` checks OCR, image and Word comparison on a PC.
+  --selftest report.txt` checks OCR, image, Word and PDF comparison on a PC.
+- Compare: PDF tables are rebuilt from where the words sit on the page, so a
+  table whose cells wrap over several lines may not come out row by row.
 - Highlights and replacements inside automatically generated fields (e.g. a
   table of contents) disappear when Word refreshes the field.
 - A space in a word or replacement stands for one or more spaces, so `"  "`

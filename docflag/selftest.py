@@ -1,6 +1,7 @@
 """`DocFlag.exe --selftest out.txt`: checks that the packaged program can do
 what the build alone doesn't prove -- real Windows OCR (the winrt modules are
-bundled), image comparison (numpy/opencv are bundled) and Word -> text.
+bundled), image comparison (numpy/opencv are bundled), Word -> text and
+PDF -> text (pdfium is bundled).
 Exit code 0 = OK. CI runs it against the frozen .exe.
 """
 from __future__ import annotations
@@ -45,6 +46,22 @@ def check_word(log) -> bool:
     return result.structured and (stats.added, stats.removed, stats.changed) == (0, 0, 1)
 
 
+def check_pdf(log) -> bool:
+    """A text PDF read exactly, and its first page rendered for image mode."""
+    from .pdftext import extract_text, minimal_pdf, render_first_page
+
+    rows = [("Item", "Price"), ("Coffee", "1,20"), ("Tea", "1,00")]
+    items = [(72 + c * 160, 100 + r * 22, cell) for r, row in enumerate(rows) for c, cell in enumerate(row)]
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "a.pdf")
+        with open(path, "wb") as f:
+            f.write(minimal_pdf([items]))
+        result = extract_text(path, ocr=lambda image: "")
+        image, pages = render_first_page(path)
+    log(f"PDF text: {result.text!r} pages={pages} rendered={image.size}")
+    return result.text == "Item | Price\nCoffee | 1,20\nTea | 1,00" and image.width > 595
+
+
 def run_selftest(out_path: str | None = None) -> int:
     import faulthandler
 
@@ -63,7 +80,7 @@ def run_selftest(out_path: str | None = None) -> int:
                 print(msg.encode("ascii", "backslashreplace").decode(), flush=True)
 
     ok = True
-    for name, check in (("ocr", check_ocr), ("image", check_image), ("word", check_word)):
+    for name, check in (("ocr", check_ocr), ("image", check_image), ("word", check_word), ("pdf", check_pdf)):
         try:
             if name == "ocr":  # as in the app: OCR on a worker thread
                 with ThreadPoolExecutor(1) as executor:

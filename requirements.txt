@@ -5,6 +5,7 @@ pywin32>=306; sys_platform == "win32"
 Pillow>=10.0
 numpy>=1.26
 opencv-python-headless>=4.9
+pypdfium2>=4.30
 winrt-runtime>=3.1,<4; sys_platform == "win32"
 winrt-Windows.Foundation>=3.1,<4; sys_platform == "win32"
 winrt-Windows.Foundation.Collections>=3.1,<4; sys_platform == "win32"

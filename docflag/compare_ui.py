@@ -19,6 +19,7 @@ from .compare import service
 from .compare.diffing import ADDED, CHANGED, EQUAL, REMOVED, DiffResult, Segment
 from .compare.imagediff import ImageDiffResult, render_overlay
 from .compare.regions import append_text, remove_region_text
+from . import pdftext
 from .doctext import extract_text
 from .legacy_convert import convert_doc, is_legacy_doc
 
@@ -26,6 +27,7 @@ MODE_TEXT = "text"
 MODE_IMAGE = "image"
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff")
 WORD_EXTENSIONS = (".docx", ".doc")
+PDF_EXTENSION = ".pdf"
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 THUMB_SIZE = (160, 110)
 PREVIEW_SIZE = (1600, 1600)
@@ -87,6 +89,14 @@ def segments_html(segments: list[Segment]) -> str:
     return "".join(parts)
 
 
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def ocr_text(image: Image.Image) -> str:
+    return service.ocr_image(image).text
+
+
 def word_count(text: str) -> str:
     words = len(text.split())
     return f"{words} {'λέξη' if words == 1 else 'λέξεις'} · {len(text)} χαρακτήρες"
@@ -124,7 +134,7 @@ class Side:
                 ).mark(f"clear-{key}")
 
             self.upload = ui.upload(
-                label="Σύρετε εδώ στιγμιότυπα ή αρχεία Word ή κάντε κλικ για αναζήτηση",
+                label="Σύρετε εδώ στιγμιότυπα, αρχεία Word ή PDF ή κάντε κλικ για αναζήτηση",
                 multiple=True,
                 auto_upload=True,
                 max_file_size=MAX_UPLOAD_BYTES,
@@ -133,7 +143,7 @@ class Side:
                     "Το αρχείο απορρίφθηκε: το όριο είναι 50 MB.", type="negative"
                 ),
             ).props(
-                f"accept={','.join(IMAGE_EXTENSIONS + WORD_EXTENSIONS)} flat bordered"
+                f"accept={','.join(IMAGE_EXTENSIONS + WORD_EXTENSIONS + (PDF_EXTENSION,))} flat bordered"
             ).classes("w-full").mark(f"upload-{key}")
             ui.label(
                 "Ή πατήστε Win+Shift+S, επιλέξτε περιοχή της οθόνης, κάντε κλικ εδώ και πατήστε Ctrl+V"
@@ -204,11 +214,13 @@ class Side:
         self.upload.reset()
         if ext in WORD_EXTENSIONS and not name.startswith("~$"):
             await self.add_word(name, ext, data)
+        elif ext == PDF_EXTENSION:
+            await self.add_pdf(name, data)
         elif ext in IMAGE_EXTENSIONS or e.file.content_type.startswith("image/"):
             await self.add_image(name, data)
         else:
             ui.notify(
-                f"Το '{name}' παραλείφθηκε: δεν είναι εικόνα ή αρχείο .docx/.doc",
+                f"Το '{name}' παραλείφθηκε: δεν είναι εικόνα ή αρχείο .docx/.doc/.pdf",
                 type="warning",
             )
 
@@ -216,9 +228,7 @@ class Side:
         if self.mode.value == MODE_IMAGE:
             ui.notify("Στη σύγκριση εικόνων προσθέστε εικόνες, όχι αρχεία Word.", type="warning")
             return
-        path = os.path.join(self.session_dir, f"compare_{self.key}_{next(self._files)}{ext}")
-        with open(path, "wb") as f:
-            f.write(data)
+        path = self._save(data, ext)
         self.set_status(f"Ανάγνωση του '{name}'…")
         try:
             if is_legacy_doc(path):
@@ -227,15 +237,56 @@ class Side:
         except Exception as exc:  # noqa: BLE001
             self.set_status(f"Το '{name}' δεν διαβάστηκε: {exc}", "error")
             return
-        # A Word file is the whole document: it replaces what was there.
+        self._replace_text(name, text, f"Κείμενο από το '{name}'.")
+
+    async def add_pdf(self, name: str, data: bytes) -> None:
+        path = self._save(data, PDF_EXTENSION)
+        self.set_status(f"Ανάγνωση του '{name}'…")
+        try:
+            if self.mode.value == MODE_IMAGE:
+                image, pages = await run.io_bound(pdftext.render_first_page, path)
+            else:
+                result = await run.io_bound(pdftext.extract_text, path, ocr_text)
+        except Exception as exc:  # noqa: BLE001
+            self.set_status(f"Το '{name}' δεν διαβάστηκε: {exc}", "error")
+            return
+        if self.mode.value == MODE_IMAGE:
+            self._show_image(image)
+            if pages > 1:
+                self.set_status(
+                    f"Η πρώτη σελίδα του '{name}' ({_count(pages, 'σελίδα', 'σελίδες')}).", "warn"
+                )
+            return
+        details = _count(result.pages, "σελίδα", "σελίδες")
+        if result.ocr_pages:
+            details += f", {result.ocr_pages} με OCR"
+        self._replace_text(name, result.text, f"Κείμενο από το '{name}' ({details}).")
+
+    def _save(self, data: bytes, ext: str) -> str:
+        path = os.path.join(self.session_dir, f"compare_{self.key}_{next(self._files)}{ext}")
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def _replace_text(self, name: str, text: str, done: str) -> None:
+        """A Word or PDF file is the whole document: it replaces what was there."""
         self.regions.clear()
         self._render_thumbs()
         self.set_text(text)
-        self.set_status(
-            f"Κείμενο από το '{name}'." if text.strip()
-            else f"Το '{name}' δεν περιέχει κείμενο.",
-            "info" if text.strip() else "warn",
-        )
+        if text.strip():
+            self.set_status(done)
+        else:
+            self.set_status(f"Το '{name}' δεν περιέχει κείμενο.", "warn")
+
+    def _show_image(self, image: Image.Image) -> None:
+        """One picture per side: a new one replaces the old."""
+        self.image = image
+        preview = image.copy()
+        preview.thumbnail(PREVIEW_SIZE)
+        self.preview.set_source(preview)
+        self.preview.set_visibility(True)
+        self.no_image.set_visibility(False)
+        self.set_status(f"{image.width}×{image.height} px")
 
     async def add_image(self, name: str, data: bytes) -> None:
         try:
@@ -244,14 +295,7 @@ class Side:
             ui.notify(f"Το '{name}' παραλείφθηκε: {exc}", type="warning")
             return
         if self.mode.value == MODE_IMAGE:
-            # One picture per side: a new one replaces the old.
-            self.image = image
-            preview = image.copy()
-            preview.thumbnail(PREVIEW_SIZE)
-            self.preview.set_source(preview)
-            self.preview.set_visibility(True)
-            self.no_image.set_visibility(False)
-            self.set_status(f"{image.width}×{image.height} px")
+            self._show_image(image)
             return
 
         thumb = image.copy()
@@ -355,8 +399,9 @@ def build_compare_tab(session_dir: str) -> None:
                 ).classes("w-48").bind_visibility_from(mode, "value", value=MODE_IMAGE)
             ui.label(
                 "Κείμενο: προσθέστε στιγμιότυπα (διαβάζονται με OCR και μπορείτε να διορθώσετε "
-                "το κείμενο) ή ένα αρχείο Word σε κάθε πλευρά· οι πίνακες συγκρίνονται γραμμή "
-                "προς γραμμή. Εικόνα: ένα στιγμιότυπο σε κάθε πλευρά, συγκρίνονται ως εικόνες."
+                "το κείμενο) ή ένα αρχείο Word ή PDF σε κάθε πλευρά· οι πίνακες συγκρίνονται "
+                "γραμμή προς γραμμή. Εικόνα: ένα στιγμιότυπο ή PDF (η πρώτη σελίδα) σε κάθε "
+                "πλευρά, συγκρίνονται ως εικόνες."
             ).classes("text-sm text-gray-500")
 
         editor = ui.column().classes("w-full gap-6")
