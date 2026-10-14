@@ -1,6 +1,7 @@
 # DocFlag
 
-Highlight a list of words in Word documents, and replace others. DocFlag runs
+Highlight a list of words in Word documents, and replace others; compare two
+documents side by side (**Σύγκριση** tab, see [Compare](#compare)). DocFlag runs
 on one PC as a small web page; anyone on the same network can open it, drop in
 Word files (`.docx` or `.doc`) and download copies with every listed word marked
 with Word's highlighter and every listed replacement made (e.g. `τηλ.` →
@@ -28,6 +29,38 @@ with Word's highlighter and every listed replacement made (e.g. `τηλ.` →
   A replacement list has one `text => replacement` per line (`→` or a tab
   also work as the separator); adding a text that is already listed updates
   its replacement.
+
+## Compare
+
+The **Σύγκριση** tab is [DocDiff](https://github.com/GNtousakis/DocDiff) in
+the browser: put document A on the left and document B on the right, press
+**Σύγκριση**, and see what was added, removed or changed, with a similarity
+percentage.
+
+- **Text mode** — each side takes any mix of:
+  - **Screenshots**: press Win+Shift+S, select part of the screen, click the
+    dashed box under the side and press Ctrl+V; or drop/upload image files.
+    The text is read with the built-in Windows OCR *of the PC that runs
+    DocFlag* and appended in order; fix OCR mistakes in the text box before
+    comparing, and remove a screenshot (and its text) with its delete button.
+  - **A Word file** (`.docx` or `.doc`): its text is read exactly, no OCR.
+    It replaces what the side held.
+
+  Comparison is word by word, ignoring accents and final sigma, and
+  optionally case and punctuation. Tables (from Word, or reconstructed from
+  screenshots) are compared row by row and cell by cell.
+- **Image mode** — one screenshot per side, compared as pictures: B is
+  aligned onto A and the changed regions are boxed (with an optional heat
+  map); the sensitivity can be lowered or raised.
+
+Greek OCR needs the Greek OCR language on the PC that runs DocFlag
+(Settings > Time & language > Language & region > Add a language > Greek,
+with *Optical character recognition* ticked; then restart DocFlag). Without
+it the tab shows a warning and Greek text reads poorly. Off Windows (e.g.
+when developing on macOS) OCR returns canned sample text.
+
+The comparison code in `docflag/compare/` is copied from DocDiff (commit
+`c06557e`) without its desktop UI; keep the two in sync by hand.
 
 ## Run on Windows (no Python needed)
 
@@ -85,6 +118,10 @@ pyinstaller packaging/docflag.spec --noconfirm
 - No login: anyone who can reach the address can use it and edit the
   lists. Run it on trusted networks only.
 - Imported `.txt` lists must be UTF-8, UTF-16 or Greek "ANSI" (Windows-1253).
+- Compare: there are no global hotkeys or drag-to-select screen overlay as in
+  the DocDiff desktop app — screenshots are pasted or uploaded. Greek OCR is
+  not tested in CI (the build machine only has English OCR); `DocFlag.exe
+  --selftest report.txt` checks OCR, image and Word comparison on a PC.
 - Highlights and replacements inside automatically generated fields (e.g. a
   table of contents) disappear when Word refreshes the field.
 - A space in a word or replacement stands for one or more spaces, so `"  "`

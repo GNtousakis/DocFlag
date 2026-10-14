@@ -49,6 +49,24 @@ jobs:
             Stop-Process -Id $app.Id -Force
           }
 
+      # The build alone doesn't prove Windows OCR (winrt) and opencv were
+      # bundled: run real OCR, an image diff and a Word diff in the .exe.
+      # The runner only has English OCR, so Greek is skipped with a warning.
+      - name: Self-test the packaged app
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist/DocFlag/DocFlag.exe -ArgumentList "--selftest","selftest.txt" -PassThru -Wait -NoNewWindow
+          if (Test-Path selftest.txt) { Get-Content selftest.txt } else { Write-Host "no selftest output produced" }
+          Write-Host "exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest-log
+          path: selftest.txt
+          if-no-files-found: ignore
+
       - name: Zip
         shell: pwsh
         run: Compress-Archive -Path dist/DocFlag -DestinationPath DocFlag-windows.zip
